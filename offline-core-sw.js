@@ -17,6 +17,7 @@
  */
 
 const CACHE_NAME = 'offline-core-static-data-v1'
+const APP_SHELL_CACHE = 'offline-core-app-shell-v1'
 
 const REWRITE_HOSTS = new Set(['api.curve.finance', 'api-core.curve.finance', 'prices.curve.finance'])
 
@@ -49,6 +50,61 @@ function jsonError(status, error, details) {
     status,
     headers: { 'content-type': 'application/json' },
   })
+}
+
+function isJsonResponse(resp) {
+  const ct = (resp && resp.headers && resp.headers.get('content-type')) || ''
+  return ct.includes('application/json') || ct.includes('+json')
+}
+
+function emptyGetPoolsResponse() {
+  return new Response(JSON.stringify({ success: true, data: { poolData: [] } }), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  })
+}
+
+function emptyGetPoolListResponse() {
+  return new Response(JSON.stringify({ success: true, data: { poolList: [] } }), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  })
+}
+
+function maybeStubMissingSnapshot(hostname, pathname, resp) {
+  // If a snapshot file is missing on IPFS, the gateway typically returns non-JSON (often text/plain).
+  // Some libs assume these endpoints always return JSON, so we provide safe empty payloads.
+  if (hostname !== 'api.curve.finance') return null
+  const looksMissing = !!resp && resp.status === 404
+  const looksHtmlOk = !!resp && resp.ok && !isJsonResponse(resp)
+
+  if (pathname.startsWith('/api/getPools/') || pathname.startsWith('/v1/getPools/')) {
+    if (looksMissing || looksHtmlOk) return emptyGetPoolsResponse()
+  }
+
+  if (pathname.startsWith('/v1/getPoolList/')) {
+    if (looksMissing || looksHtmlOk) return emptyGetPoolListResponse()
+  }
+
+  return null
+}
+
+function looksLikeFilePath(pathname) {
+  const last = (pathname || '').split('/').filter(Boolean).pop() || ''
+  return last.includes('.')
+}
+
+async function getAppShell() {
+  const cache = await caches.open(APP_SHELL_CACHE)
+  const scopeUrl = self.registration.scope
+  const cached = await cache.match(scopeUrl)
+  if (cached) return cached
+
+  const resp = await fetch(scopeUrl, { cache: 'no-store' })
+  if (resp && resp.ok) {
+    void cache.put(scopeUrl, resp.clone())
+  }
+  return resp
 }
 
 function mapQueryUrl(url) {
@@ -105,6 +161,28 @@ self.addEventListener('fetch', (event) => {
   const req = event.request
   const url = new URL(req.url)
 
+  // SPA fallback for gateways that do not rewrite deep routes to index.html.
+  // This only helps after the SW is installed/controlling; initial deep-link loads still need a compatible gateway.
+  if (req.method === 'GET' && req.mode === 'navigate' && url.origin === self.location.origin) {
+    // Don't hijack navigations to known files.
+    if (!looksLikeFilePath(url.pathname)) {
+      event.respondWith(
+        (async () => {
+          try {
+            const networkResp = await fetch(req)
+            if (networkResp && networkResp.ok) return networkResp
+          } catch {
+            // ignore and fall back to app shell
+          }
+          const shell = await getAppShell()
+          if (shell && shell.ok) return shell
+          return jsonError(503, 'offline-core-unavailable', 'Failed loading app shell')
+        })(),
+      )
+      return
+    }
+  }
+
   // Block local router backend + error reporting in Offline-Core.
   if (
     url.origin === self.location.origin &&
@@ -157,7 +235,8 @@ self.addEventListener('fetch', (event) => {
           )
           return cached
         }
-        return await cacheFirst(rewrittenUrl)
+        const resp = await cacheFirst(rewrittenUrl)
+        return maybeStubMissingSnapshot(url.hostname, pathname, resp) || resp
       })(),
     )
     return
