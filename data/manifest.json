@@ -1,0 +1,13 @@
+{
+  "endpointsWritten": 1842,
+  "failures": [
+    {
+      "bestEffort": false,
+      "error": "HTTP Error 500: Internal Server Error",
+      "hostname": "api.curve.finance",
+      "path": "/v1/getPoolList/harmony",
+      "url": "https://api.curve.finance/v1/getPoolList/harmony"
+    }
+  ],
+  "generatedAt": "2026-02-05T09:04:59.855836+00:00"
+}
