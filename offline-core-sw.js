@@ -88,6 +88,10 @@ function emptyGetFactoryApysResponse() {
   return jsonOk({ success: true, data: { poolDetails: [], totalVolumeUsd: 0, totalVolume: 0 } })
 }
 
+function emptyGetLendingVaultsResponse() {
+  return jsonOk({ success: true, data: { lendingVaultData: [], tvl: 0 } })
+}
+
 function getStubResponse(hostname, pathname) {
   if (pathname.startsWith('/api/getPools/') || pathname.startsWith('/v1/getPools/')) return emptyGetPoolsResponse()
   if (hostname === 'api.curve.finance' && pathname.startsWith('/v1/getPoolList/')) return emptyGetPoolListResponse()
@@ -96,6 +100,7 @@ function getStubResponse(hostname, pathname) {
     if (pathname.startsWith('/api/getVolumes/')) return emptyGetVolumesResponse()
     if (pathname.startsWith('/api/getSubgraphData/')) return emptyGetSubgraphDataResponse()
     if (pathname.startsWith('/api/getFactoryAPYs/')) return emptyGetFactoryApysResponse()
+    if (pathname.startsWith('/api/getLendingVaults/')) return emptyGetLendingVaultsResponse()
   }
 
   return null
