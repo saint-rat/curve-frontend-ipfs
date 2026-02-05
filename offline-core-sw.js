@@ -16,8 +16,8 @@
  *   query mappings needed for DAO proposals; everything else with a querystring is rejected.
  */
 
-const CACHE_NAME = 'offline-core-static-data-v1'
-const APP_SHELL_CACHE = 'offline-core-app-shell-v1'
+const CACHE_NAME = 'offline-core-static-data-v2'
+const APP_SHELL_CACHE = 'offline-core-app-shell-v2'
 
 const REWRITE_HOSTS = new Set(['api.curve.finance', 'api-core.curve.finance', 'prices.curve.finance'])
 
@@ -52,41 +52,70 @@ function jsonError(status, error, details) {
   })
 }
 
-function isJsonResponse(resp) {
+function isHtmlResponse(resp) {
   const ct = (resp && resp.headers && resp.headers.get('content-type')) || ''
-  return ct.includes('application/json') || ct.includes('+json')
+  return ct.includes('text/html')
+}
+
+function jsonOk(payload) {
+  return new Response(JSON.stringify(payload), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  })
 }
 
 function emptyGetPoolsResponse() {
-  return new Response(JSON.stringify({ success: true, data: { poolData: [] } }), {
-    status: 200,
-    headers: { 'content-type': 'application/json' },
-  })
+  // Matches Curve API /getPools data access patterns (Curve-JS reads `json.data`).
+  return jsonOk({ success: true, data: { poolData: [], tvl: 0, tvlAll: 0 } })
 }
 
 function emptyGetPoolListResponse() {
-  return new Response(JSON.stringify({ success: true, data: { poolList: [] } }), {
-    status: 200,
-    headers: { 'content-type': 'application/json' },
+  return jsonOk({ success: true, data: { poolList: [] } })
+}
+
+function emptyGetVolumesResponse() {
+  return jsonOk({
+    success: true,
+    data: { pools: [], totalVolumes: { totalVolume: 0, totalCryptoVolume: 0, cryptoVolumeSharePcent: 0 } },
   })
 }
 
-function maybeStubMissingSnapshot(hostname, pathname, resp) {
-  // If a snapshot file is missing on IPFS, the gateway typically returns non-JSON (often text/plain).
-  // Some libs assume these endpoints always return JSON, so we provide safe empty payloads.
-  if (hostname !== 'api.curve.finance') return null
-  const looksMissing = !!resp && resp.status === 404
-  const looksHtmlOk = !!resp && resp.ok && !isJsonResponse(resp)
+function emptyGetSubgraphDataResponse() {
+  return jsonOk({ success: true, data: { poolList: [], totalVolume: 0, cryptoVolume: 0, cryptoShare: 0 } })
+}
 
-  if (pathname.startsWith('/api/getPools/') || pathname.startsWith('/v1/getPools/')) {
-    if (looksMissing || looksHtmlOk) return emptyGetPoolsResponse()
-  }
+function emptyGetFactoryApysResponse() {
+  return jsonOk({ success: true, data: { poolDetails: [], totalVolumeUsd: 0, totalVolume: 0 } })
+}
 
-  if (pathname.startsWith('/v1/getPoolList/')) {
-    if (looksMissing || looksHtmlOk) return emptyGetPoolListResponse()
+function getStubResponse(hostname, pathname) {
+  if (pathname.startsWith('/api/getPools/') || pathname.startsWith('/v1/getPools/')) return emptyGetPoolsResponse()
+  if (hostname === 'api.curve.finance' && pathname.startsWith('/v1/getPoolList/')) return emptyGetPoolListResponse()
+
+  if (hostname === 'api.curve.finance') {
+    if (pathname.startsWith('/api/getVolumes/')) return emptyGetVolumesResponse()
+    if (pathname.startsWith('/api/getSubgraphData/')) return emptyGetSubgraphDataResponse()
+    if (pathname.startsWith('/api/getFactoryAPYs/')) return emptyGetFactoryApysResponse()
   }
 
   return null
+}
+
+async function maybeStubAndCache(cache, rewrittenUrl, hostname, pathname, resp) {
+  const stub = getStubResponse(hostname, pathname)
+  if (!stub) return null
+
+  // Snapshot files may be served as `text/plain` (still valid JSON). Only stub when it's actually missing/broken.
+  const shouldStub = !resp || !resp.ok || isHtmlResponse(resp)
+  if (!shouldStub) return null
+
+  try {
+    await cache.put(rewrittenUrl, stub.clone())
+  } catch {
+    // ignore cache failures (quota, etc)
+  }
+
+  return stub
 }
 
 function looksLikeFilePath(pathname) {
@@ -136,7 +165,7 @@ async function cacheFirst(rewrittenUrl) {
       return jsonError(503, 'offline-core-unavailable', `Failed fetching static data: ${String(e)}`)
     }
 
-    if (resp && resp.ok) {
+    if (resp && resp.ok && !isHtmlResponse(resp)) {
       void cache.put(rewrittenUrl, resp.clone())
     }
 
@@ -211,6 +240,12 @@ self.addEventListener('fetch', (event) => {
 
     let pathname = normalizePath(url.pathname)
 
+    // Gas API should never be used in Offline-Core (RPC-only gas pricing).
+    if (url.hostname === 'api.curve.finance' && pathname.startsWith('/api/getGas')) {
+      event.respondWith(jsonError(503, 'offline-core-disabled', 'Gas API disabled in Offline-Core'))
+      return
+    }
+
     if (url.search) {
       const mapped = mapQueryUrl(url)
       if (mapped.error) {
@@ -226,17 +261,20 @@ self.addEventListener('fetch', (event) => {
         const cache = await caches.open(CACHE_NAME)
         const cached = await cache.match(rewrittenUrl)
         if (cached) {
+          const cachedStub = await maybeStubAndCache(cache, rewrittenUrl, url.hostname, pathname, cached)
+          const toReturn = cachedStub || cached
+
           event.waitUntil(
             fetch(rewrittenUrl, { cache: 'no-store' })
               .then((resp) => {
-                if (resp && resp.ok) return cache.put(rewrittenUrl, resp.clone())
+                if (resp && resp.ok && !isHtmlResponse(resp)) return cache.put(rewrittenUrl, resp.clone())
               })
               .catch(() => {}),
           )
-          return cached
+          return toReturn
         }
         const resp = await cacheFirst(rewrittenUrl)
-        return maybeStubMissingSnapshot(url.hostname, pathname, resp) || resp
+        return (await maybeStubAndCache(cache, rewrittenUrl, url.hostname, pathname, resp)) || resp
       })(),
     )
     return
