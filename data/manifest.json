@@ -1,6 +1,13 @@
 {
-  "endpointsWritten": 1863,
+  "endpointsWritten": 1864,
   "failures": [
+    {
+      "bestEffort": false,
+      "error": "HTTP Error 404: Not Found",
+      "hostname": "api-core.curve.finance",
+      "path": "/api/getHiddenPools",
+      "url": "https://api-core.curve.finance/api/getHiddenPools"
+    },
     {
       "bestEffort": false,
       "error": "HTTP Error 500: Internal Server Error",
@@ -9,5 +16,5 @@
       "url": "https://api.curve.finance/v1/getPoolList/harmony"
     }
   ],
-  "generatedAt": "2026-02-05T10:40:14.635825+00:00"
+  "generatedAt": "2026-02-05T10:53:50.678320+00:00"
 }
